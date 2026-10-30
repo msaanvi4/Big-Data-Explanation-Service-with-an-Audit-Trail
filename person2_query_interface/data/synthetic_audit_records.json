@@ -1,0 +1,65 @@
+{
+  "synthetic_only": true,
+  "generated_by": "person2_query_interface/data/generator.py",
+  "description": "Person 2 extended fixture mirroring Person 1's Iceberg schema contracts; one synthetic prediction from the 2026-10 monthly batch (model loan-risk-demo-v1.0.0). explanation_json / reason_codes are stored as parsed JSON (Person 1's fixture style); the Parquet backend stores them as JSON strings per the DDL.",
+  "prediction_events": [{
+    "prediction_id": "00000000-0000-4000-8000-000000000101",
+    "decision_ts": "2026-10-01T10:30:00Z",
+    "decision_date": "2026-10-01",
+    "demo_decision": "DECLINE",
+    "risk_score": 0.742,
+    "model_version": "loan-risk-demo-v1.0.0",
+    "input_snapshot_id": "00000000-0000-4000-8000-000000000201",
+    "explanation_id": "00000000-0000-4000-8000-000000000301",
+    "request_trace_id": "trace-synthetic-2026100001",
+    "schema_version": "1.0.0"
+  }],
+  "input_snapshots": [{
+    "input_snapshot_id": "00000000-0000-4000-8000-000000000201",
+    "prediction_id": "00000000-0000-4000-8000-000000000101",
+    "feature_schema_version": "loan-features-v1",
+    "loan_amnt": 35000.00,
+    "revenue": 48000.00,
+    "dti_n": 27.3000,
+    "fico_n": 640,
+    "experience_c": false,
+    "emp_length": "1-4 years",
+    "purpose": "debt_consolidation",
+    "home_ownership_n": "RENT",
+    "input_hash": "sha256-placeholder-replaced-by-generator-hash",
+    "created_at": "2026-10-01T10:30:00Z"
+  }],
+  "explanation_records": [{
+    "explanation_id": "00000000-0000-4000-8000-000000000301",
+    "prediction_id": "00000000-0000-4000-8000-000000000101",
+    "explainer_name": "shap",
+    "explainer_version": "1.0.0",
+    "explanation_json": [
+      {"feature": "dti_n", "contribution": 0.19, "direction": "increases_risk"},
+      {"feature": "fico_n", "contribution": -0.09, "direction": "decreases_risk"},
+      {"feature": "loan_amnt", "contribution": 0.06, "direction": "increases_risk"}
+    ],
+    "reason_codes": ["HIGHER_DEBT_RATIO", "CREDIT_SCORE_SUPPORTS_LOWER_RISK", "HIGHER_LOAN_AMOUNT"],
+    "rendered_summary": "Decision driven by loan-risk-demo-v1.0.0: debt-to-income ratio increases the risk; credit score decreases the risk.",
+    "explanation_hash": "sha256-placeholder-replaced-by-generator-hash",
+    "created_at": "2026-10-01T10:30:00Z"
+  }],
+  "model_registry": [{
+    "model_version": "loan-risk-demo-v1.0.0",
+    "artifact_uri": "s3://example-bucket/models/loan-risk-demo-v1.0.0/model.bin",
+    "artifact_sha256": "sha256-placeholder-for-immutable-synthetic-demo-artifact",
+    "framework": "deterministic-logistic-demo",
+    "runtime_version": "python-3.14-scikit-learn-1.9.1",
+    "feature_code_commit": "example-commit-sha",
+    "preprocessing_sha256": "sha256-placeholder",
+    "training_dataset_id": "synthetic-loan-demo",
+    "training_dataset_version": "1.0.0",
+    "training_dataset_sha256": "sha256-placeholder",
+    "training_window_start": "2026-01-01",
+    "training_window_end": "2026-09-30",
+    "label_definition": "synthetic repayment outcome for demonstration only",
+    "threshold_policy_version": "demo-thresholds-v1",
+    "explainer_compatibility": "demo-explainers-1.0.0",
+    "registered_at": "2026-10-01T10:00:00Z"
+  }]
+}
