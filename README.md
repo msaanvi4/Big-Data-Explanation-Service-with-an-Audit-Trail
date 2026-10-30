@@ -13,8 +13,7 @@ flowchart LR
     D --> F[(Iceberg input_snapshots)]
     D --> G[(Iceberg explanation_records)]
     D --> H[(Iceberg model_registry)]
-    D --> I[Historical lookup by prediction ID]
-    E --> I
+    E --> I[Historical lookup by prediction ID]
     F --> I
     G --> I
     H --> I
@@ -23,26 +22,26 @@ flowchart LR
 
 ## Person 1 deliverables
 
-- [Storage design report (DOCX)](docs/person1_storage_design.docx)
-- [Storage design (Markdown)](docs/person1_storage_design.md)
-- [Iceberg table DDL proposal](schemas/iceberg_schema.sql)
-- [Synthetic example records](examples/synthetic_audit_records.json)
+- [Storage design report (DOCX)](person1_storage_design.docx)
+- [Storage design (Markdown)](person1_storage_design.md)
+- [Iceberg table DDL proposal](iceberg_schema.sql)
+- [Synthetic example records](synthetic_audit_records.json)
 
 ## Design summary
 
-- Four Iceberg tables: `prediction_events`, `input_snapshots`, `explanation_records`, and `model_registry`.
-- Parquet with Zstandard compression; event tables partition by decision time and linked artifacts by their creation time. Monthly transforms may suit a small demo.
-- Immutable events and artifacts link by generated UUIDs, with SHA-256 hashes for canonical inputs and explanations.
-- Retain Iceberg snapshots and immutable model, preprocessing, explainer, and policy artifacts for point-in-time replay.
-- Do not partition by applicant or include direct borrower identifiers. Use synthetic records only.
+- Four logical Iceberg tables: `prediction_events`, `input_snapshots`, `explanation_records`, and `model_registry`.
+- Parquet data files with Zstandard compression; time-based partitions on decision time for events and created time for linked artifacts; monthly partitions are an option for small demonstrations.
+- Immutable event and artifact records linked by generated UUIDs, with SHA-256 hashes for canonical inputs and explanations.
+- Retain Iceberg snapshots and immutable model, preprocessing, explainer, and policy artifacts to support point-in-time replay.
+- Do not partition by applicant or include direct borrower identifiers. Use only synthetic records in this project implementation.
 
 ## Data and privacy note
 
-The supplied Lending Club CSV contains borrower-level financial, employment, location, and free-text fields. The course brief prohibits real personal data, so this repo does not contain that CSV or real borrower values. Included examples are synthetic. Source field `Default` is a final repayment outcome, not a historical accept/deny decision.
+The supplied Lending Club CSV contains borrower-level financial, employment, location, and free-text fields. The course brief prohibits real personal data, so this repo does not contain that CSV or any real borrower values. The included examples are synthetic. `Default` in the source data is a final repayment outcome, not a historical accept/deny decision.
 
 ## Status and setup
 
-This is Person 1's architecture submission. The SQL is a proposed Spark SQL / Iceberg schema and has not been applied to a running lakehouse. Person 2 can use it as the storage baseline when implementing the query interface and reproducibility test. To review, open the DOCX or Markdown report; inspect `schemas/iceberg_schema.sql`; use `examples/synthetic_audit_records.json` as a contract fixture. No dataset download is required.
+This is Person 1's architecture submission. The SQL is a proposed Spark SQL / Iceberg schema and has not been applied to a running lakehouse. Person 2 can use it as the storage baseline when implementing the query interface and reproducibility test. To review, open the DOCX or Markdown report; inspect the table definitions in `iceberg_schema.sql`; use `synthetic_audit_records.json` as a contract fixture. No dataset download is required.
 
 ## Dataset provenance
 
