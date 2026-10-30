@@ -1,0 +1,62 @@
+{
+  "synthetic_only": true,
+  "prediction_events": [{
+    "prediction_id": "00000000-0000-4000-8000-000000000101",
+    "decision_ts": "2026-10-01T10:30:00Z",
+    "decision_date": "2026-10-01",
+    "demo_decision": "REVIEW",
+    "risk_score": 0.63,
+    "model_version": "loan-risk-demo-v1.0.0",
+    "input_snapshot_id": "00000000-0000-4000-8000-000000000201",
+    "explanation_id": "00000000-0000-4000-8000-000000000301",
+    "request_trace_id": "trace-synthetic-001",
+    "schema_version": "1.0.0"
+  }],
+  "input_snapshots": [{
+    "input_snapshot_id": "00000000-0000-4000-8000-000000000201",
+    "prediction_id": "00000000-0000-4000-8000-000000000101",
+    "feature_schema_version": "loan-features-v1",
+    "loan_amnt": 12000.00,
+    "revenue": 65000.00,
+    "dti_n": 18.5000,
+    "fico_n": 710,
+    "experience_c": true,
+    "emp_length": "5 years",
+    "purpose": "debt_consolidation",
+    "home_ownership_n": "MORTGAGE",
+    "input_hash": "sha256-placeholder-generated-from-canonical-synthetic-input",
+    "created_at": "2026-10-01T10:30:00Z"
+  }],
+  "explanation_records": [{
+    "explanation_id": "00000000-0000-4000-8000-000000000301",
+    "prediction_id": "00000000-0000-4000-8000-000000000101",
+    "explainer_name": "synthetic-demo-explainer",
+    "explainer_version": "1.0.0",
+    "explanation_json": [
+      {"feature": "dti_n", "contribution": 0.12, "direction": "increases_risk"},
+      {"feature": "fico_n", "contribution": -0.08, "direction": "decreases_risk"}
+    ],
+    "reason_codes": ["HIGHER_DEBT_RATIO", "CREDIT_SCORE_SUPPORTS_LOWER_RISK"],
+    "rendered_summary": "Synthetic example: debt ratio raised the risk score; credit score lowered it.",
+    "explanation_hash": "sha256-placeholder-generated-from-canonical-synthetic-explanation",
+    "created_at": "2026-10-01T10:30:00Z"
+  }],
+  "model_registry": [{
+    "model_version": "loan-risk-demo-v1.0.0",
+    "artifact_uri": "s3://example-bucket/models/loan-risk-demo-v1.0.0/model.bin",
+    "artifact_sha256": "sha256-placeholder-for-immutable-synthetic-demo-artifact",
+    "framework": "example-framework",
+    "runtime_version": "1.0.0",
+    "feature_code_commit": "example-commit-sha",
+    "preprocessing_sha256": "sha256-placeholder",
+    "training_dataset_id": "synthetic-loan-demo-v1",
+    "training_dataset_version": "1.0.0",
+    "training_dataset_sha256": "sha256-placeholder",
+    "training_window_start": "2026-01-01",
+    "training_window_end": "2026-09-30",
+    "label_definition": "synthetic repayment outcome for demonstration only",
+    "threshold_policy_version": "demo-thresholds-v1",
+    "explainer_compatibility": "synthetic-demo-explainer-1.0.0",
+    "registered_at": "2026-10-01T10:00:00Z"
+  }]
+}
