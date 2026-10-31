@@ -2,18 +2,22 @@
 """
 Person 3: Right-to-be-Forgotten Deletion Service
 
-Prototype workflow:
-1. Store customer-linked data separately.
-2. Process a deletion request.
-3. Delete the customer's operational data.
-4. Retain a minimal deletion-evidence record.
-5. Record the deletion operation in the audit trail.
+Supports:
+1. Synthetic SQLite customer-data deletion.
+2. Retention of minimal deletion evidence.
+3. External Parquet deletion evidence.
+4. Evidence hash verification.
+5. Integration with the Person 3 audit logger.
 
-This is a synthetic-data prototype, not a legal determination
-of which records must be retained under applicable law.
+This is a prototype, not a legal determination of
+which records must be retained under applicable law.
+
+The original customer reference is never stored in
+the retained deletion-evidence table.
 """
 
 import hashlib
+import json
 import sqlite3
 import uuid
 
@@ -47,7 +51,7 @@ class DeletionService:
 
         conn = sqlite3.connect(
             self.db_path,
-            timeout=30
+            timeout=30,
         )
 
         conn.row_factory = sqlite3.Row
@@ -64,7 +68,47 @@ class DeletionService:
             conn.close()
 
     # --------------------------------------------------
-    # CREATE TABLES
+    # TIME AND HASH HELPERS
+    # --------------------------------------------------
+
+    @staticmethod
+    def _now():
+
+        return (
+            datetime.now(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    @staticmethod
+    def _calculate_evidence_hash(evidence):
+
+        canonical_data = json.dumps(
+            evidence,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        return hashlib.sha256(
+            canonical_data.encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def generate_subject_token(customer_ref, request_id):
+        """
+        Generate a request-specific pseudonymous token.
+
+        This is pseudonymization, not guaranteed anonymization.
+        """
+
+        value = f"{request_id}:{customer_ref}"
+
+        return hashlib.sha256(
+            value.encode("utf-8")
+        ).hexdigest()
+
+    # --------------------------------------------------
+    # CREATE TABLES AND MIGRATIONS
     # --------------------------------------------------
 
     def create_tables(self):
@@ -99,6 +143,34 @@ class DeletionService:
                 )
             """)
 
+            # Backward-compatible schema migrations.
+            existing_columns = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(deletion_evidence)"
+                ).fetchall()
+            }
+
+            migrations = {
+                "backend": (
+                    "ALTER TABLE deletion_evidence "
+                    "ADD COLUMN backend TEXT NOT NULL DEFAULT 'SQLITE'"
+                ),
+                "details_json": (
+                    "ALTER TABLE deletion_evidence "
+                    "ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'"
+                ),
+                "actor_id": (
+                    "ALTER TABLE deletion_evidence "
+                    "ADD COLUMN actor_id TEXT"
+                ),
+            }
+
+            for column, sql in migrations.items():
+
+                if column not in existing_columns:
+                    conn.execute(sql)
+
     # --------------------------------------------------
     # ADD SYNTHETIC CUSTOMER DATA
     # --------------------------------------------------
@@ -107,12 +179,12 @@ class DeletionService:
         self,
         customer_ref,
         data_type,
-        data_value
+        data_value,
     ):
         """
-        Add a synthetic customer-linked record.
+        Add synthetic customer-linked data.
 
-        This method is for prototype setup and testing.
+        Intended for prototype setup and testing.
         """
 
         if not customer_ref:
@@ -126,9 +198,7 @@ class DeletionService:
 
         record_id = str(uuid.uuid4())
 
-        created_at = datetime.now(
-            timezone.utc
-        ).isoformat()
+        created_at = self._now()
 
         with self.get_connection() as conn:
 
@@ -146,7 +216,7 @@ class DeletionService:
                 customer_ref,
                 data_type,
                 str(data_value),
-                created_at
+                created_at,
             ))
 
         return record_id
@@ -168,45 +238,126 @@ class DeletionService:
             return row["total"]
 
     # --------------------------------------------------
-    # GENERATE PSEUDONYMOUS SUBJECT TOKEN
+    # BUILD EVIDENCE
     # --------------------------------------------------
 
-    @staticmethod
-    def generate_subject_token(customer_ref, request_id):
-        """
-        Create a request-specific pseudonymous token.
+    def _build_evidence(
+        self,
+        request_id,
+        subject_token,
+        requested_at,
+        completed_at,
+        deleted_records,
+        status,
+        backend,
+        details,
+    ):
 
-        The original customer reference is not stored in
-        the deletion evidence table.
+        evidence = {
+            "request_id": request_id,
+            "subject_token": subject_token,
+            "requested_at": requested_at,
+            "completed_at": completed_at,
+            "deleted_records": int(deleted_records),
+            "status": status,
+            "backend": backend,
+            "details": details,
+        }
 
-        Note: A hash is pseudonymization, not guaranteed
-        anonymization. Do not store the secret reference
-        mapping in the retained evidence.
-        """
-
-        value = f"{request_id}:{customer_ref}"
-
-        return hashlib.sha256(
-            value.encode("utf-8")
-        ).hexdigest()
+        return evidence
 
     # --------------------------------------------------
-    # REQUEST DELETION
+    # STORE RETAINED EVIDENCE
+    # --------------------------------------------------
+
+    def _store_evidence(
+        self,
+        request_id,
+        subject_token,
+        requested_at,
+        completed_at,
+        deleted_records,
+        status,
+        backend,
+        details,
+        actor_id=None,
+    ):
+
+        evidence = self._build_evidence(
+            request_id=request_id,
+            subject_token=subject_token,
+            requested_at=requested_at,
+            completed_at=completed_at,
+            deleted_records=deleted_records,
+            status=status,
+            backend=backend,
+            details=details,
+        )
+
+        evidence_hash = self._calculate_evidence_hash(
+            evidence
+        )
+
+        with self.get_connection() as conn:
+
+            conn.execute("""
+                INSERT INTO deletion_evidence (
+                    request_id,
+                    subject_token,
+                    requested_at,
+                    completed_at,
+                    deleted_records,
+                    status,
+                    evidence_hash,
+                    backend,
+                    details_json,
+                    actor_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                request_id,
+                subject_token,
+                requested_at,
+                completed_at,
+                deleted_records,
+                status,
+                evidence_hash,
+                backend,
+                json.dumps(details, sort_keys=True),
+                actor_id,
+            ))
+
+        return {
+            "request_id": request_id,
+            "status": status,
+            "backend": backend,
+            "deleted_records": deleted_records,
+            "completed_at": completed_at,
+            "evidence_hash": evidence_hash,
+        }
+
+    # --------------------------------------------------
+    # LEGACY SQLITE DELETION
     # --------------------------------------------------
 
     def request_deletion(
         self,
         customer_ref,
         requested_by,
-        purpose="Customer right-to-be-forgotten request"
+        purpose="Customer right-to-be-forgotten request",
     ):
         """
-        Delete customer-linked operational data and retain
-        a minimal deletion evidence record.
+        Delete synthetic SQLite customer data.
 
-        requested_by identifies the authenticated requester
-        in this prototype. Real authentication is required
-        before using this in a production service.
+        Compatibility method for the existing SQLite prototype.
+
+        IMPORTANT:
+        The caller must authenticate and authorize the requester
+        before calling this method.
+
+        Do not use this method as the production authentication
+        boundary. Person3Integration handles authenticated
+        Parquet deletion separately.
         """
 
         if not customer_ref:
@@ -217,18 +368,16 @@ class DeletionService:
 
         request_id = str(uuid.uuid4())
 
-        requested_at = datetime.now(
-            timezone.utc
-        ).isoformat()
+        requested_at = self._now()
 
         subject_token = self.generate_subject_token(
             customer_ref,
-            request_id
+            request_id,
         )
 
+        # Delete data and retain evidence in one SQLite transaction.
         with self.get_connection() as conn:
 
-            # Count records before deletion
             row = conn.execute("""
                 SELECT COUNT(*) AS total
                 FROM customer_data
@@ -237,32 +386,43 @@ class DeletionService:
 
             deleted_records = row["total"]
 
-            # Delete customer-linked operational data
             conn.execute("""
                 DELETE FROM customer_data
                 WHERE customer_ref = ?
             """, (customer_ref,))
 
-            completed_at = datetime.now(
-                timezone.utc
-            ).isoformat()
+            # Verify the actual SQLite customer records are gone.
+            remaining = conn.execute("""
+                SELECT COUNT(*) AS total
+                FROM customer_data
+                WHERE customer_ref = ?
+            """, (customer_ref,)).fetchone()["total"]
+
+            if remaining != 0:
+                raise RuntimeError(
+                    "SQLite deletion verification failed."
+                )
+
+            completed_at = self._now()
 
             status = "COMPLETED"
 
-            # Retain minimal evidence without the original
-            # customer reference or personal data.
-            evidence = {
-                "request_id": request_id,
-                "subject_token": subject_token,
-                "requested_at": requested_at,
-                "completed_at": completed_at,
-                "deleted_records": deleted_records,
-                "status": status
-            }
+            evidence = self._build_evidence(
+                request_id=request_id,
+                subject_token=subject_token,
+                requested_at=requested_at,
+                completed_at=completed_at,
+                deleted_records=deleted_records,
+                status=status,
+                backend="SQLITE",
+                details={
+                    "verification": "NO_MATCHING_CUSTOMER_RECORDS",
+                },
+            )
 
-            evidence_hash = hashlib.sha256(
-                str(sorted(evidence.items())).encode("utf-8")
-            ).hexdigest()
+            evidence_hash = self._calculate_evidence_hash(
+                evidence
+            )
 
             conn.execute("""
                 INSERT INTO deletion_evidence (
@@ -272,9 +432,12 @@ class DeletionService:
                     completed_at,
                     deleted_records,
                     status,
-                    evidence_hash
+                    evidence_hash,
+                    backend,
+                    details_json,
+                    actor_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 request_id,
                 subject_token,
@@ -282,12 +445,17 @@ class DeletionService:
                 completed_at,
                 deleted_records,
                 status,
-                evidence_hash
+                evidence_hash,
+                "SQLITE",
+                json.dumps(
+                    evidence["details"],
+                    sort_keys=True,
+                ),
+                str(requested_by),
             ))
 
-        # Record the deletion operation in the separate
-        # Person 3 audit trail without putting the original
-        # customer reference into this new audit event.
+        # Backward compatibility for existing prototype tests.
+        # Production role and identity must come from authentication.
         if self.audit_logger:
 
             self.audit_logger.log_event(
@@ -299,10 +467,10 @@ class DeletionService:
                 purpose=purpose,
                 status="SUCCESS",
                 reason=(
-                    f"Deletion completed; "
+                    f"SQLite deletion completed; "
                     f"records deleted: {deleted_records}; "
                     f"request ID: {request_id}"
-                )
+                ),
             )
 
         return {
@@ -310,14 +478,137 @@ class DeletionService:
             "status": status,
             "deleted_records": deleted_records,
             "completed_at": completed_at,
-            "evidence_hash": evidence_hash
+            "evidence_hash": evidence_hash,
         }
 
     # --------------------------------------------------
-    # VERIFY DELETION
+    # RECORD EXTERNAL PARQUET DELETION EVIDENCE
+    # --------------------------------------------------
+
+    def record_external_deletion(
+        self,
+        customer_ref,
+        actor_id,
+        actor_role,
+        purpose,
+        deletion_result,
+        request_id=None,
+    ):
+        """
+        Retain evidence for a deletion performed by an external
+        storage adapter, such as ParquetDeletionAdapter.
+
+        This method does not delete Parquet data itself.
+
+        The adapter must complete and verify deletion first.
+
+        The original customer reference is used only to generate
+        the request-specific token. It is not stored in evidence.
+        """
+
+        if not customer_ref:
+            raise ValueError("customer_ref is required")
+
+        if not actor_id:
+            raise ValueError("actor_id is required")
+
+        if actor_role != "ADMIN":
+            raise PermissionError(
+                "Only an authenticated ADMIN may record "
+                "an administrator deletion operation."
+            )
+
+        if not purpose:
+            raise ValueError("purpose is required")
+
+        if not isinstance(deletion_result, dict):
+            raise ValueError(
+                "deletion_result must be a dictionary."
+            )
+
+        result_status = deletion_result.get("status")
+
+        if result_status not in {"VERIFIED", "NOT_FOUND"}:
+            raise ValueError(
+                "Only verified deletion results or NOT_FOUND "
+                "results can be retained as completed evidence."
+            )
+
+        request_id = request_id or str(uuid.uuid4())
+
+        requested_at = self._now()
+        completed_at = self._now()
+
+        subject_token = self.generate_subject_token(
+            customer_ref,
+            request_id,
+        )
+
+        deleted_predictions = int(
+            deletion_result.get("deleted_predictions", 0)
+        )
+
+        deleted_inputs = int(
+            deletion_result.get("deleted_input_snapshots", 0)
+        )
+
+        deleted_explanations = int(
+            deletion_result.get("deleted_explanations", 0)
+        )
+
+        details = {
+            "purpose": purpose,
+            "predictions_deleted": deleted_predictions,
+            "input_snapshots_deleted": deleted_inputs,
+            "explanations_deleted": deleted_explanations,
+            "preserved_shared_inputs": int(
+                deletion_result.get(
+                    "preserved_shared_inputs", 0
+                )
+            ),
+            "preserved_shared_explanations": int(
+                deletion_result.get(
+                    "preserved_shared_explanations", 0
+                )
+            ),
+            "modified_batches": sorted(
+                deletion_result.get("modified_batches", [])
+            ),
+            "adapter_status": result_status,
+        }
+
+        evidence_status = "COMPLETED"
+
+        total_deleted = (
+            deleted_predictions
+            + deleted_inputs
+            + deleted_explanations
+        )
+
+        return self._store_evidence(
+            request_id=request_id,
+            subject_token=subject_token,
+            requested_at=requested_at,
+            completed_at=completed_at,
+            deleted_records=total_deleted,
+            status=evidence_status,
+            backend="PARQUET",
+            details=details,
+            actor_id=str(actor_id),
+        )
+
+    # --------------------------------------------------
+    # VERIFY RETAINED DELETION EVIDENCE
     # --------------------------------------------------
 
     def verify_deletion(self, request_id):
+        """
+        Verify the retained evidence record.
+
+        This verifies evidence integrity and recorded completion.
+        It does not independently inspect historical backups,
+        Iceberg snapshots, or external storage.
+        """
 
         with self.get_connection() as conn:
 
@@ -328,44 +619,58 @@ class DeletionService:
             """, (request_id,)).fetchone()
 
             if evidence is None:
+
                 return {
                     "verified": False,
-                    "reason": "Deletion request not found"
+                    "reason": "Deletion request not found",
                 }
 
-            remaining = conn.execute("""
-                SELECT COUNT(*) AS total
-                FROM customer_data
-                WHERE record_id = ?
-            """, ("__no_matching_record__",)).fetchone()
+            try:
+                details = json.loads(
+                    evidence["details_json"]
+                )
+            except (ValueError, TypeError):
 
-            # Recalculate retained evidence hash
-            evidence_data = {
-                "request_id": evidence["request_id"],
-                "subject_token": evidence["subject_token"],
-                "requested_at": evidence["requested_at"],
-                "completed_at": evidence["completed_at"],
-                "deleted_records": evidence["deleted_records"],
-                "status": evidence["status"]
-            }
+                return {
+                    "verified": False,
+                    "reason": "Evidence details are invalid",
+                }
 
-            calculated_hash = hashlib.sha256(
-                str(sorted(evidence_data.items())).encode("utf-8")
-            ).hexdigest()
+            evidence_data = self._build_evidence(
+                request_id=evidence["request_id"],
+                subject_token=evidence["subject_token"],
+                requested_at=evidence["requested_at"],
+                completed_at=evidence["completed_at"],
+                deleted_records=evidence["deleted_records"],
+                status=evidence["status"],
+                backend=evidence["backend"],
+                details=details,
+            )
+
+            calculated_hash = self._calculate_evidence_hash(
+                evidence_data
+            )
 
             hash_valid = (
                 calculated_hash == evidence["evidence_hash"]
             )
 
+            status_valid = (
+                evidence["status"] == "COMPLETED"
+            )
+
             return {
-                "verified": (
-                    evidence["status"] == "COMPLETED"
-                    and hash_valid
-                ),
+                "verified": hash_valid and status_valid,
                 "status": evidence["status"],
+                "backend": evidence["backend"],
                 "deleted_records": evidence["deleted_records"],
                 "evidence_hash_valid": hash_valid,
-                "request_id": evidence["request_id"]
+                "request_id": evidence["request_id"],
+                "reason": (
+                    "Evidence integrity verified."
+                    if hash_valid and status_valid
+                    else "Evidence integrity or completion status invalid."
+                ),
             }
 
     # --------------------------------------------------
