@@ -2,78 +2,81 @@
 """
 Authorization Service
 
-Checks whether customers, regulators and administrators
-are allowed to access prediction and explanation records.
+Enforces role-based access control using verified
+identities obtained from AuthenticationService.
 
-All valid-role access attempts are recorded in the audit trail.
+Callers cannot choose their own role.
 """
 
 try:
-    # Imports when used as part of the main project package
     from .access_matrix import is_action_allowed
-    from ..audit.audit_logger import AuditLogger, VALID_ROLES
+    from .authentication import AuthenticationService
+    from ..audit.audit_logger import AuditLogger
 
 except ImportError:
-    # Imports when tests are run from inside person3_compliance_audit
     from security.access_matrix import is_action_allowed
-    from audit.audit_logger import AuditLogger, VALID_ROLES
+    from security.authentication import AuthenticationService
+    from audit.audit_logger import AuditLogger
+
+
 class AuthorizationService:
 
-    def __init__(self, audit_logger=None):
-        """
-        Initialize authorization service.
-
-        An existing AuditLogger can be passed to share
-        the same audit database.
-        """
+    def __init__(
+        self,
+        audit_logger=None,
+        authentication_service=None
+    ):
 
         self.audit_logger = audit_logger or AuditLogger()
 
+        self.authentication = (
+            authentication_service or AuthenticationService()
+        )
+
     def authorize(
         self,
-        actor_id,
-        actor_role,
+        session_token,
         action,
         purpose,
         customer_ref=None,
         prediction_id=None
     ):
         """
-        Authorize an access request.
+        Verify the session first, then authorize the action.
 
-        Returns:
-            {
-                "authorized": True or False,
-                "reason": "...",
-                "audit_event": {...}
-            }
-
-        Customer ownership is checked by comparing
-        actor_id with customer_ref.
+        Identity and role are retrieved from the trusted
+        authentication database.
         """
 
-        # Validate identity
-        if not actor_id or not str(actor_id).strip():
-            raise ValueError("actor_id is required")
+        if not session_token:
+            return {
+                "authorized": False,
+                "reason": "Access denied: authentication required",
+                "audit_event": None
+            }
 
-        if not actor_role:
-            raise ValueError("actor_role is required")
+        # Step 1: Verify the session.
+        identity = self.authentication.authenticate_session(
+            session_token
+        )
 
-        role = str(actor_role).upper()
+        if identity is None:
+            return {
+                "authorized": False,
+                "reason": "Access denied: invalid or expired session",
+                "audit_event": None
+            }
 
-        # The audit logger supports only these roles.
-        # Reject unknown roles rather than recording them
-        # under a misleading identity.
-        if role not in VALID_ROLES:
-            raise ValueError(f"Invalid actor role: {role}")
+        # Step 2: Obtain verified identity.
+        actor_id = identity["user_id"]
+        actor_role = identity["role"]
 
+        # Step 3: Validate the requested action.
         if not action or not str(action).strip():
-            raise ValueError("action is required")
+            raise ValueError("Action is required")
 
         action = str(action).upper()
 
-        # A missing purpose is a denied request, but it
-        # must still be recorded in the audit trail.
         purpose_missing = (
             not purpose or not str(purpose).strip()
         )
@@ -87,71 +90,52 @@ class AuthorizationService:
         authorized = False
         reason = ""
 
-        # ------------------------------------------
-        # RULE 1: Purpose is mandatory
-        # ------------------------------------------
-
         if purpose_missing:
+
             reason = "Access denied: purpose is required"
 
-        # ------------------------------------------
-        # RULE 2: Role-based action permission
-        # ------------------------------------------
+        elif not is_action_allowed(actor_role, action):
 
-        elif not is_action_allowed(role, action):
             reason = (
-                f"Access denied: {role} cannot perform "
-                f"{action}"
+                f"Access denied: {actor_role} cannot perform {action}"
             )
 
-        # ------------------------------------------
-        # RULE 3: Customer ownership validation
-        # ------------------------------------------
-
-        elif role == "CUSTOMER":
+        elif actor_role == "CUSTOMER":
 
             if not customer_ref:
+
                 reason = (
                     "Access denied: customer reference is required"
                 )
 
             elif str(actor_id) != str(customer_ref):
+
                 reason = (
                     "Access denied: customers can access "
                     "only their own records"
                 )
 
             else:
+
                 authorized = True
                 reason = "Customer ownership verified"
 
-        # ------------------------------------------
-        # RULE 4: Regulator access
-        # ------------------------------------------
-
-        elif role == "REGULATOR":
+        elif actor_role == "REGULATOR":
 
             authorized = True
             reason = (
                 "Regulator access permitted for compliance purposes"
             )
 
-        # ------------------------------------------
-        # RULE 5: Administrator access
-        # ------------------------------------------
-
-        elif role == "ADMIN":
+        elif actor_role == "ADMIN":
 
             authorized = True
             reason = "Administrator access permitted"
 
-        # ------------------------------------------
-        # RECORD ACCESS ATTEMPT
-        # ------------------------------------------
-
+        # Step 4: Record the authorization decision.
         audit_event = self.audit_logger.log_event(
-            actor_id=str(actor_id),
-            actor_role=role,
+            actor_id=actor_id,
+            actor_role=actor_role,
             customer_ref=customer_ref,
             prediction_id=prediction_id,
             action=action,
@@ -163,5 +147,7 @@ class AuthorizationService:
         return {
             "authorized": authorized,
             "reason": reason,
+            "actor_id": actor_id,
+            "actor_role": actor_role,
             "audit_event": audit_event
         }
