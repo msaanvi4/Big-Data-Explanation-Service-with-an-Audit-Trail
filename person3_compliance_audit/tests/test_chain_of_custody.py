@@ -10,7 +10,6 @@ from custody.chain_of_custody import ChainOfCustody
 class TestChainOfCustody(unittest.TestCase):
 
     def setUp(self):
-
         self.temp_dir = tempfile.TemporaryDirectory()
 
         db_path = Path(self.temp_dir.name) / "custody_test.db"
@@ -189,9 +188,165 @@ class TestChainOfCustody(unittest.TestCase):
         )
 
         self.assertFalse(result["valid"])
+
         self.assertEqual(
             result["error"],
             "Record hash mismatch"
+        )
+
+    # -----------------------------------------
+    # ADVANCED CHAIN OF CUSTODY TESTS
+    # -----------------------------------------
+
+    def test_deleted_event_detection(self):
+
+        self.custody.record_prediction_lifecycle(
+            prediction_id="prediction_001",
+            actor_id="service_001",
+            actor_role="SYSTEM",
+            input_snapshot={"feature": 10},
+            model_version="model_v1",
+            explanation={"reason": "Synthetic"}
+        )
+
+        history = self.custody.get_prediction_history(
+            "prediction_001"
+        )
+
+        deleted_event_id = history[2]["event_id"]
+
+        with self.custody.get_connection() as conn:
+
+            conn.execute("""
+                DELETE FROM custody_events
+                WHERE event_id = ?
+            """, (deleted_event_id,))
+
+        result = self.custody.verify_prediction_chain(
+            "prediction_001"
+        )
+
+        self.assertFalse(result["valid"])
+
+        self.assertEqual(
+            result["error"],
+            "Previous hash mismatch"
+        )
+
+        self.assertEqual(
+            result["failed_event_id"],
+            history[3]["event_id"]
+        )
+
+    def test_multiple_event_tampering_detection(self):
+
+        self.custody.record_prediction_lifecycle(
+            prediction_id="prediction_001",
+            actor_id="service_001",
+            actor_role="SYSTEM",
+            input_snapshot={"feature": 10},
+            model_version="model_v1",
+            explanation={"reason": "Synthetic"}
+        )
+
+        history = self.custody.get_prediction_history(
+            "prediction_001"
+        )
+
+        target_event_id = history[0]["event_id"]
+
+        with self.custody.get_connection() as conn:
+
+            conn.execute("""
+                UPDATE custody_events
+                SET actor_id = ?
+                WHERE event_id = ?
+            """, (
+                "modified_actor",
+                target_event_id
+            ))
+
+        result = self.custody.verify_prediction_chain(
+            "prediction_001"
+        )
+
+        self.assertFalse(result["valid"])
+
+        self.assertEqual(
+            result["error"],
+            "Record hash mismatch"
+        )
+
+        self.assertEqual(
+            result["failed_event_id"],
+            target_event_id
+        )
+
+    def test_previous_hash_tampering_detection(self):
+
+        self.custody.record_prediction_lifecycle(
+            prediction_id="prediction_001",
+            actor_id="service_001",
+            actor_role="SYSTEM",
+            input_snapshot={"feature": 10},
+            model_version="model_v1",
+            explanation={"reason": "Synthetic"}
+        )
+
+        history = self.custody.get_prediction_history(
+            "prediction_001"
+        )
+
+        target_event_id = history[1]["event_id"]
+
+        with self.custody.get_connection() as conn:
+
+            conn.execute("""
+                UPDATE custody_events
+                SET previous_hash = ?
+                WHERE event_id = ?
+            """, (
+                "f" * 64,
+                target_event_id
+            ))
+
+        result = self.custody.verify_prediction_chain(
+            "prediction_001"
+        )
+
+        self.assertFalse(result["valid"])
+
+        self.assertEqual(
+            result["error"],
+            "Previous hash mismatch"
+        )
+
+        self.assertEqual(
+            result["failed_event_id"],
+            target_event_id
+        )
+
+    def test_missing_prediction_history_rejected(self):
+
+        result = self.custody.verify_prediction_chain(
+            "prediction_999"
+        )
+
+        self.assertFalse(result["valid"])
+
+        self.assertEqual(
+            result["prediction_id"],
+            "prediction_999"
+        )
+
+        self.assertEqual(
+            result["checked_events"],
+            0
+        )
+
+        self.assertEqual(
+            result["error"],
+            "No custody events found"
         )
 
 
