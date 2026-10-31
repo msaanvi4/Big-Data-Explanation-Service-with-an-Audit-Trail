@@ -1,0 +1,13 @@
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# SQLite runtime databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.log
