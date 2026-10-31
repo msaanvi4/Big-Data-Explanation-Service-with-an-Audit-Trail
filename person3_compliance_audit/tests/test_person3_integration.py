@@ -10,10 +10,12 @@ Tests:
 5. Chain of custody
 6. Prediction reproducibility
 7. Administrator-controlled account provisioning
+8. Authenticated Parquet deletion
 """
 
-import unittest
+import shutil
 import tempfile
+import unittest
 
 from pathlib import Path
 
@@ -21,11 +23,13 @@ from person2_query_interface.app.repository import get_repository
 
 from person3_compliance_audit.audit.audit_logger import AuditLogger
 from person3_compliance_audit.security.authentication import (
-    AuthenticationService
+    AuthenticationService,
 )
-from person3_compliance_audit.custody.chain_of_custody import ChainOfCustody
+from person3_compliance_audit.custody.chain_of_custody import (
+    ChainOfCustody,
+)
 from person3_compliance_audit.integration.person3_adapter import (
-    Person3Integration
+    Person3Integration,
 )
 
 
@@ -36,7 +40,10 @@ class TestPerson3Integration(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         db_folder = Path(self.temp_dir.name)
 
-        # Connect to Person 2's actual repository.
+        # --------------------------------------------------
+        # PERSON 2 REPOSITORY
+        # --------------------------------------------------
+
         self.repository = get_repository()
 
         self.prediction_id = (
@@ -51,7 +58,32 @@ class TestPerson3Integration(unittest.TestCase):
             self.bundle.prediction.request_trace_id
         )
 
-        # Create isolated databases.
+        # --------------------------------------------------
+        # CREATE TEMPORARY PARQUET DATASET COPY
+        # --------------------------------------------------
+
+        project_root = Path(__file__).resolve().parents[2]
+
+        original_batches = (
+            project_root
+            / "person2_query_interface"
+            / "data"
+            / "monthly_batches"
+        )
+
+        self.test_batches = (
+            db_folder / "monthly_batches"
+        )
+
+        shutil.copytree(
+            original_batches,
+            self.test_batches,
+        )
+
+        # --------------------------------------------------
+        # CREATE ISOLATED DATABASES
+        # --------------------------------------------------
+
         self.audit_logger = AuditLogger(
             db_path=str(db_folder / "audit.db")
         )
@@ -70,7 +102,7 @@ class TestPerson3Integration(unittest.TestCase):
 
         self.authentication.bootstrap_admin(
             "admin_integration_001",
-            "AdminIntegrationPassword@2026"
+            "AdminIntegrationPassword@2026",
         )
 
         # --------------------------------------------------
@@ -79,7 +111,7 @@ class TestPerson3Integration(unittest.TestCase):
 
         self.admin_login = self.authentication.login(
             "admin_integration_001",
-            "AdminIntegrationPassword@2026"
+            "AdminIntegrationPassword@2026",
         )
 
         self.admin_token = (
@@ -94,14 +126,14 @@ class TestPerson3Integration(unittest.TestCase):
             self.admin_token,
             self.customer_ref,
             "CustomerPassword@2026",
-            "CUSTOMER"
+            "CUSTOMER",
         )
 
         self.authentication.create_user(
             self.admin_token,
             "different-synthetic-customer",
             "DifferentPassword@2026",
-            "CUSTOMER"
+            "CUSTOMER",
         )
 
         # --------------------------------------------------
@@ -112,7 +144,7 @@ class TestPerson3Integration(unittest.TestCase):
             self.admin_token,
             "regulator-demo-01",
             "RegulatorPassword@2026",
-            "REGULATOR"
+            "REGULATOR",
         )
 
         # --------------------------------------------------
@@ -121,17 +153,17 @@ class TestPerson3Integration(unittest.TestCase):
 
         self.customer_login = self.authentication.login(
             self.customer_ref,
-            "CustomerPassword@2026"
+            "CustomerPassword@2026",
         )
 
         self.other_customer_login = self.authentication.login(
             "different-synthetic-customer",
-            "DifferentPassword@2026"
+            "DifferentPassword@2026",
         )
 
         self.regulator_login = self.authentication.login(
             "regulator-demo-01",
-            "RegulatorPassword@2026"
+            "RegulatorPassword@2026",
         )
 
         self.customer_token = (
@@ -154,7 +186,8 @@ class TestPerson3Integration(unittest.TestCase):
             repository=self.repository,
             audit_logger=self.audit_logger,
             custody=self.custody,
-            authentication_service=self.authentication
+            authentication_service=self.authentication,
+            parquet_batches_dir=self.test_batches,
         )
 
     def tearDown(self):
@@ -169,24 +202,24 @@ class TestPerson3Integration(unittest.TestCase):
         result = self.integration.access_prediction(
             session_token=self.customer_token,
             prediction_id=self.prediction_id,
-            purpose="Customer decision review"
+            purpose="Customer decision review",
         )
 
         self.assertTrue(result["authorized"])
 
         self.assertEqual(
             result["actor_role"],
-            "CUSTOMER"
+            "CUSTOMER",
         )
 
         self.assertEqual(
             result["audit_event"]["status"],
-            "SUCCESS"
+            "SUCCESS",
         )
 
         self.assertEqual(
             result["custody_event"]["event_type"],
-            "PREDICTION_ACCESSED"
+            "PREDICTION_ACCESSED",
         )
 
         verification = self.integration.verify_custody(
@@ -204,14 +237,14 @@ class TestPerson3Integration(unittest.TestCase):
         result = self.integration.access_prediction(
             session_token=self.other_customer_token,
             prediction_id=self.prediction_id,
-            purpose="Unauthorized access attempt"
+            purpose="Unauthorized access attempt",
         )
 
         self.assertFalse(result["authorized"])
 
         self.assertEqual(
             result["audit_event"]["status"],
-            "DENIED"
+            "DENIED",
         )
 
     # --------------------------------------------------
@@ -223,19 +256,19 @@ class TestPerson3Integration(unittest.TestCase):
         result = self.integration.access_prediction(
             session_token=self.regulator_token,
             prediction_id=self.prediction_id,
-            purpose="Regulatory compliance inspection"
+            purpose="Regulatory compliance inspection",
         )
 
         self.assertTrue(result["authorized"])
 
         self.assertEqual(
             result["actor_role"],
-            "REGULATOR"
+            "REGULATOR",
         )
 
         self.assertEqual(
             result["audit_event"]["status"],
-            "SUCCESS"
+            "SUCCESS",
         )
 
         verification = self.integration.verify_custody(
@@ -253,14 +286,14 @@ class TestPerson3Integration(unittest.TestCase):
         result = self.integration.replay_prediction(
             prediction_id=self.prediction_id,
             session_token=self.customer_token,
-            purpose="Customer replay attempt"
+            purpose="Customer replay attempt",
         )
 
         self.assertFalse(result["authorized"])
 
         self.assertEqual(
             result["audit_event"]["status"],
-            "DENIED"
+            "DENIED",
         )
 
     # --------------------------------------------------
@@ -272,19 +305,19 @@ class TestPerson3Integration(unittest.TestCase):
         result = self.integration.replay_prediction(
             prediction_id=self.prediction_id,
             session_token=self.regulator_token,
-            purpose="Regulatory reproducibility verification"
+            purpose="Regulatory reproducibility verification",
         )
 
         self.assertTrue(result["authorized"])
 
         self.assertEqual(
             result["actor_role"],
-            "REGULATOR"
+            "REGULATOR",
         )
 
         self.assertEqual(
             result["status"],
-            "SUCCESS"
+            "SUCCESS",
         )
 
         self.assertIsNotNone(
@@ -297,17 +330,17 @@ class TestPerson3Integration(unittest.TestCase):
 
         self.assertEqual(
             result["audit_event"]["action"],
-            "REPLAY_EXECUTED"
+            "REPLAY_EXECUTED",
         )
 
         self.assertEqual(
             result["audit_event"]["status"],
-            "SUCCESS"
+            "SUCCESS",
         )
 
         self.assertEqual(
             result["custody_event"]["event_type"],
-            "PREDICTION_REPLAYED"
+            "PREDICTION_REPLAYED",
         )
 
         verification = self.integration.verify_custody(
@@ -325,7 +358,7 @@ class TestPerson3Integration(unittest.TestCase):
         result = self.integration.access_prediction(
             session_token="invalid-session",
             prediction_id=self.prediction_id,
-            purpose="Invalid session attempt"
+            purpose="Invalid session attempt",
         )
 
         self.assertFalse(result["authorized"])
@@ -345,10 +378,186 @@ class TestPerson3Integration(unittest.TestCase):
         result = self.integration.access_prediction(
             session_token=self.customer_token,
             prediction_id=self.prediction_id,
-            purpose="Access after logout"
+            purpose="Access after logout",
         )
 
         self.assertFalse(result["authorized"])
+
+    # ==================================================
+    # AUTHENTICATED DELETION TESTS
+    # ==================================================
+
+    # --------------------------------------------------
+    # TEST 8: ADMIN CAN PREVIEW DELETION
+    # --------------------------------------------------
+
+    def test_admin_can_preview_customer_deletion(self):
+
+        result = self.integration.preview_customer_deletion(
+            session_token=self.admin_token,
+            customer_ref=self.customer_ref,
+            purpose="Administrator deletion review",
+        )
+
+        self.assertTrue(result["authorized"])
+
+        self.assertEqual(
+            result["actor_role"],
+            "ADMIN",
+        )
+
+        self.assertIsNotNone(
+            result["preview"]
+        )
+
+        self.assertGreater(
+            result["preview"]["prediction_count"],
+            0,
+        )
+
+    # --------------------------------------------------
+    # TEST 9: ADMIN CAN EXECUTE DELETION
+    # --------------------------------------------------
+
+    def test_admin_can_delete_customer_data(self):
+
+        result = self.integration.delete_customer_data(
+            session_token=self.admin_token,
+            customer_ref=self.customer_ref,
+            purpose="Administrator right-to-be-forgotten request",
+        )
+
+        self.assertTrue(result["authorized"])
+
+        self.assertEqual(
+            result["status"],
+            "COMPLETED",
+        )
+
+        self.assertEqual(
+            result["actor_role"],
+            "ADMIN",
+        )
+
+        self.assertEqual(
+            result["deletion_result"]["status"],
+            "VERIFIED",
+        )
+
+        self.assertGreater(
+            result["deletion_result"]["deleted_predictions"],
+            0,
+        )
+
+        self.assertEqual(
+            result["audit_event"]["action"],
+            "DELETE_CUSTOMER_DATA",
+        )
+
+        self.assertEqual(
+            result["audit_event"]["status"],
+            "SUCCESS",
+        )
+
+        # Original customer reference must not be in
+        # the retained execution audit event.
+        self.assertIsNone(
+            result["audit_event"]["customer_ref"]
+        )
+
+    # --------------------------------------------------
+    # TEST 10: CUSTOMER CANNOT EXECUTE DELETION
+    # --------------------------------------------------
+
+    def test_customer_cannot_delete_customer_data(self):
+
+        result = self.integration.delete_customer_data(
+            session_token=self.customer_token,
+            customer_ref=self.customer_ref,
+            purpose="Customer deletion attempt",
+        )
+
+        self.assertFalse(result["authorized"])
+
+        self.assertEqual(
+            result["status"],
+            "DENIED",
+        )
+
+        self.assertIsNone(
+            result.get("deletion_result")
+        )
+
+    # --------------------------------------------------
+    # TEST 11: REGULATOR CANNOT EXECUTE DELETION
+    # --------------------------------------------------
+
+    def test_regulator_cannot_delete_customer_data(self):
+
+        result = self.integration.delete_customer_data(
+            session_token=self.regulator_token,
+            customer_ref=self.customer_ref,
+            purpose="Regulator deletion attempt",
+        )
+
+        self.assertFalse(result["authorized"])
+
+        self.assertEqual(
+            result["status"],
+            "DENIED",
+        )
+
+        self.assertIsNone(
+            result.get("deletion_result")
+        )
+
+    # --------------------------------------------------
+    # TEST 12: INVALID SESSION CANNOT EXECUTE DELETION
+    # --------------------------------------------------
+
+    def test_invalid_session_cannot_delete_customer_data(self):
+
+        result = self.integration.delete_customer_data(
+            session_token="invalid-session",
+            customer_ref=self.customer_ref,
+            purpose="Invalid session deletion attempt",
+        )
+
+        self.assertFalse(result["authorized"])
+
+        self.assertEqual(
+            result["status"],
+            "DENIED",
+        )
+
+        self.assertIsNone(
+            result.get("deletion_result")
+        )
+
+    # --------------------------------------------------
+    # TEST 13: LOGGED-OUT ADMIN CANNOT EXECUTE DELETION
+    # --------------------------------------------------
+
+    def test_logged_out_admin_cannot_delete_customer_data(self):
+
+        self.integration.logout(self.admin_token)
+
+        result = self.integration.delete_customer_data(
+            session_token=self.admin_token,
+            customer_ref=self.customer_ref,
+            purpose="Deletion after administrator logout",
+        )
+
+        self.assertFalse(result["authorized"])
+
+        self.assertEqual(
+            result["status"],
+            "DENIED",
+        )
+
+        self.assertIsNone(
+            result.get("deletion_result")
+        )
 
 
 if __name__ == "__main__":
