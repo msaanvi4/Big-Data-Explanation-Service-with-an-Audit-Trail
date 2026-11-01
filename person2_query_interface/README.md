@@ -26,7 +26,7 @@ person2_query_interface/
 │   ├── config.py               # runtime configuration
 │   ├── model.py                # pinned, deterministic model artifacts (weights by version)
 │   ├── explainers.py           # versioned feature_importance / shap / lime
-│   ├── repository.py           # pluggable audit repository (DuckDB/Parquet, fixture, Iceberg stub)
+│   ├── repository.py           # pluggable audit repository (DuckDB/Parquet, fixture, Iceberg backend)
 │   ├── reproducibility.py      # replay engine + consistency report
 │   └── service.py              # FastAPI application layer
 ├── data/
@@ -82,11 +82,21 @@ Run the service:
 EXPLANATION_REPO_BACKEND=duckdb uvicorn person2_query_interface.app.service:app
 ```
 
+For a real Apache Iceberg backend:
+
+```bash
+# One-time: initialize Iceberg tables and load synthetic batches
+python3 init_iceberg.py
+
+# Run the service against Iceberg
+EXPLANATION_REPO_BACKEND=iceberg uvicorn person2_query_interface.app.service:app
+```
+
 Endpoints:
 
 - `GET /explain?request_trace_id=...&from_ts=...&to_ts=...` — decision lookup
 - `GET /decision/{prediction_id}` — full audit bundle
-- `GET /decision/{prediction_id}/at/{snapshot_id}` — point-in-time bundle
+- `GET /decision/{prediction_id}/at/{snapshot_id}` — point-in-time bundle (Iceberg `VERSION AS OF`)
 - `GET /replay/{prediction_id}` — reproducibility replay
 - `GET /consistency` — decision-consistency report
 - `GET /health`

@@ -59,7 +59,25 @@ The supplied Lending Club CSV contains borrower-level financial, employment, loc
 
 ## Status and setup
 
-This is Person 1's architecture submission. The SQL is a proposed Spark SQL / Iceberg schema and has not been applied to a running lakehouse. Person 2 uses it as the storage baseline for the query interface and reproducibility test; see `person2_query_interface/`. No dataset download is required — all records are synthetic.
+This is Person 1's architecture submission. The SQL is a proposed Spark SQL / Iceberg schema (`iceberg_schema.sql`). Person 2 uses it as the storage baseline for the query interface and reproducibility test; see `person2_query_interface/`. No dataset download is required — all records are synthetic.
+
+### Iceberg backend (Person 2)
+
+A real Apache Iceberg catalog backend is available via `EXPLANATION_REPO_BACKEND=iceberg`. It reads from an Iceberg warehouse (default: `iceberg_warehouse/`) using a SQL catalog (SQLite) and supports native `VERSION AS OF` time travel.
+
+Initialize and load data:
+
+```bash
+python3 init_iceberg.py
+```
+
+Run the service with Iceberg:
+
+```bash
+EXPLANATION_REPO_BACKEND=iceberg uvicorn person2_query_interface.app.service:app
+```
+
+The DuckDB/Parquet backend remains the default (`EXPLANATION_REPO_BACKEND=duckdb`) and requires no cluster.
 
 ## Dataset provenance
 

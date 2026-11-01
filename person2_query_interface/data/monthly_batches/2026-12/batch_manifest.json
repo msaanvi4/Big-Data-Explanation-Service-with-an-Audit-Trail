@@ -2,8 +2,8 @@
   "batch_month": "2026-12",
   "model_version": "loan-risk-demo-v1.0.0",
   "record_count": 2000,
-  "snapshot_id": "7fdc8159-2bc8-4f73-992e-6a87f1754ad3",
-  "written_at": "2026-10-30T17:33:52.533832Z",
+  "snapshot_id": "0cfd9f38-5f5f-454c-82a4-e6f558944919",
+  "written_at": "2026-11-01T20:03:09.183028Z",
   "entries": [
     {
       "batch_month": "2026-12",
@@ -12,8 +12,8 @@
       "record_count": 2000,
       "min_ts": "2026-12-01T08:01:22Z",
       "max_ts": "2026-12-25T19:58:10Z",
-      "snapshot_id": "7fdc8159-2bc8-4f73-992e-6a87f1754ad3",
-      "written_at": "2026-10-30T17:33:52.533832Z",
+      "snapshot_id": "0cfd9f38-5f5f-454c-82a4-e6f558944919",
+      "written_at": "2026-11-01T20:03:09.183028Z",
       "schema_version": "1.0.0"
     },
     {
@@ -23,8 +23,8 @@
       "record_count": 2000,
       "min_ts": "2026-12-01T08:01:22Z",
       "max_ts": "2026-12-25T19:58:10Z",
-      "snapshot_id": "7fdc8159-2bc8-4f73-992e-6a87f1754ad3",
-      "written_at": "2026-10-30T17:33:52.533832Z",
+      "snapshot_id": "0cfd9f38-5f5f-454c-82a4-e6f558944919",
+      "written_at": "2026-11-01T20:03:09.183028Z",
       "schema_version": "1.0.0"
     },
     {
@@ -34,8 +34,8 @@
       "record_count": 2000,
       "min_ts": "2026-12-01T08:01:22Z",
       "max_ts": "2026-12-25T19:58:10Z",
-      "snapshot_id": "7fdc8159-2bc8-4f73-992e-6a87f1754ad3",
-      "written_at": "2026-10-30T17:33:52.533832Z",
+      "snapshot_id": "0cfd9f38-5f5f-454c-82a4-e6f558944919",
+      "written_at": "2026-11-01T20:03:09.183028Z",
       "schema_version": "1.0.0"
     },
     {
@@ -45,8 +45,8 @@
       "record_count": 1,
       "min_ts": null,
       "max_ts": null,
-      "snapshot_id": "7fdc8159-2bc8-4f73-992e-6a87f1754ad3",
-      "written_at": "2026-10-30T17:33:52.533832Z",
+      "snapshot_id": "0cfd9f38-5f5f-454c-82a4-e6f558944919",
+      "written_at": "2026-11-01T20:03:09.183028Z",
       "schema_version": "1.0.0"
     }
   ]

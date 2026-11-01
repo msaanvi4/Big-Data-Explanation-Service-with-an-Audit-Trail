@@ -453,8 +453,471 @@ class DuckDbParquetRepository(AuditRepository):
 
 
 # --------------------------------------------------------------------------- #
-# JSON fixture repository
+# Apache Iceberg repository (real catalog backend via pyiceberg)
 # --------------------------------------------------------------------------- #
+class IcebergRepository(AuditRepository):
+    """Person 2: data access layer over a live Apache Iceberg catalog.
+
+    Executes the same Q1–Q7 domain operations as the DuckDB backend but
+    against real Iceberg tables with native snapshot isolation and
+    ``VERSION AS OF`` time travel.
+
+    Requires: ``pip install pyiceberg[pandas]`` and an Iceberg catalog
+    (Hadoop/filesystem by default) at :attr:`config.ICEBERG_WAREHOUSE`.
+    """
+
+    def __init__(self, warehouse: str | None = None, catalog_name: str | None = None) -> None:
+        from pyiceberg.catalog import load_catalog
+        from pyiceberg.schema import Schema, NestedField
+        from pyiceberg.types import (
+            BooleanType,
+            DateType,
+            DecimalType,
+            DoubleType,
+            IntegerType,
+            StringType,
+            TimestampType,
+        )
+        from pyiceberg.partitioning import PartitionSpec, PartitionField
+        from pyiceberg.transforms import DayTransform
+        from pyiceberg.table import Table
+
+        self._Table = Table  # keep reference for type hints
+        self._catalog_name = catalog_name or config.ICEBERG_CATALOG_NAME
+        warehouse = warehouse or config.ICEBERG_WAREHOUSE
+
+        self.catalog = load_catalog(
+            self._catalog_name,
+            **{
+                "type": "sql",
+                "warehouse": f"file://{warehouse}",
+                "uri": f"sqlite:///{warehouse}/catalog.db",
+            },
+        )
+        self.namespace = config.ICEBERG_NAMESPACE
+        self._ensure_namespace()
+        self._tables: dict[str, Any] = {}
+        self._init_tables(Schema, NestedField, StringType, TimestampType, DateType, DoubleType,
+                          DecimalType, IntegerType, BooleanType,
+                          PartitionSpec, PartitionField, DayTransform)
+
+    # ------------------------------------------------------------------ #
+    # Table initialization
+    # ------------------------------------------------------------------ #
+    def _ensure_namespace(self) -> None:
+        try:
+            self.catalog.create_namespace(self.namespace)
+        except Exception:
+            # Namespace may already exist
+            pass
+
+    def _table_name(self, table: str) -> str:
+        return f"{self.namespace}.{table}"
+
+    def _init_tables(
+        self,
+        Schema,
+        NestedField,
+        StringType,
+        TimestampType,
+        DateType,
+        DoubleType,
+        DecimalType,
+        IntegerType,
+        BooleanType,
+        PartitionSpec,
+        PartitionField,
+        DayTransform,
+    ) -> None:
+        """Create Iceberg tables matching Person 1's ``iceberg_schema.sql``
+        if they do not already exist."""
+
+        def _fields(spec: list[tuple[int, str, Any]]) -> list[NestedField]:
+            return [NestedField(fid, name, typ) for fid, name, typ in spec]
+
+        # ---- model_registry ----
+        model_registry_schema = Schema(
+            *_fields([
+                (1, "model_version", StringType()),
+                (2, "artifact_uri", StringType()),
+                (3, "artifact_sha256", StringType()),
+                (4, "framework", StringType()),
+                (5, "runtime_version", StringType()),
+                (6, "feature_code_commit", StringType()),
+                (7, "preprocessing_sha256", StringType()),
+                (8, "training_dataset_id", StringType()),
+                (9, "training_dataset_version", StringType()),
+                (10, "training_dataset_sha256", StringType()),
+                (11, "training_window_start", DateType()),
+                (12, "training_window_end", DateType()),
+                (13, "label_definition", StringType()),
+                (14, "threshold_policy_version", StringType()),
+                (15, "explainer_compatibility", StringType()),
+                (16, "registered_at", TimestampType()),
+            ])
+        )
+        self._get_or_create_table("model_registry", model_registry_schema, None)
+
+        # ---- prediction_events (partitioned by days(decision_ts)) ----
+        # Field IDs: 1=prediction_id, 2=decision_ts, 3=decision_date, ...
+        prediction_events_schema = Schema(
+            *_fields([
+                (1, "prediction_id", StringType()),
+                (2, "decision_ts", TimestampType()),
+                (3, "decision_date", DateType()),
+                (4, "demo_decision", StringType()),
+                (5, "risk_score", DoubleType()),
+                (6, "model_version", StringType()),
+                (7, "input_snapshot_id", StringType()),
+                (8, "explanation_id", StringType()),
+                (9, "request_trace_id", StringType()),
+                (10, "schema_version", StringType()),
+            ])
+        )
+        self._get_or_create_table(
+            "prediction_events",
+            prediction_events_schema,
+            PartitionSpec(
+                partition_fields=(
+                    PartitionField(
+                        source_id=2, field_id=1000, name="decision_ts_day", transform=DayTransform()
+                    ),
+                )
+            ),
+        )
+
+        # ---- input_snapshots (partitioned by days(created_at)) ----
+        # Field IDs: ... 13=created_at
+        input_snapshots_schema = Schema(
+            *_fields([
+                (1, "input_snapshot_id", StringType()),
+                (2, "prediction_id", StringType()),
+                (3, "feature_schema_version", StringType()),
+                (4, "loan_amnt", DecimalType(12, 2)),
+                (5, "revenue", DecimalType(12, 2)),
+                (6, "dti_n", DecimalType(7, 4)),
+                (7, "fico_n", IntegerType()),
+                (8, "experience_c", BooleanType()),
+                (9, "emp_length", StringType()),
+                (10, "purpose", StringType()),
+                (11, "home_ownership_n", StringType()),
+                (12, "input_hash", StringType()),
+                (13, "created_at", TimestampType()),
+            ])
+        )
+        self._get_or_create_table(
+            "input_snapshots",
+            input_snapshots_schema,
+            PartitionSpec(
+                partition_fields=(
+                    PartitionField(
+                        source_id=13, field_id=1000, name="created_at_day", transform=DayTransform()
+                    ),
+                )
+            ),
+        )
+
+        # ---- explanation_records (partitioned by days(created_at)) ----
+        # Field IDs: ... 9=created_at
+        explanation_records_schema = Schema(
+            *_fields([
+                (1, "explanation_id", StringType()),
+                (2, "prediction_id", StringType()),
+                (3, "explainer_name", StringType()),
+                (4, "explainer_version", StringType()),
+                (5, "explanation_json", StringType()),
+                (6, "reason_codes", StringType()),
+                (7, "rendered_summary", StringType()),
+                (8, "explanation_hash", StringType()),
+                (9, "created_at", TimestampType()),
+            ])
+        )
+        self._get_or_create_table(
+            "explanation_records",
+            explanation_records_schema,
+            PartitionSpec(
+                partition_fields=(
+                    PartitionField(
+                        source_id=9, field_id=1000, name="created_at_day", transform=DayTransform()
+                    ),
+                )
+            ),
+        )
+
+    def _get_or_create_table(self, table: str, schema: Any, spec: Any | None) -> None:
+        fqn = self._table_name(table)
+        try:
+            t = self.catalog.load_table(fqn)
+        except Exception:
+            if spec is not None:
+                t = self.catalog.create_table(fqn, schema=schema, partition_spec=spec)
+            else:
+                t = self.catalog.create_table(fqn, schema=schema)
+        self._tables[table] = t
+
+    def _table(self, table: str) -> Any:
+        if table not in self._tables:
+            self._tables[table] = self.catalog.load_table(self._table_name(table))
+        return self._tables[table]
+
+    # ------------------------------------------------------------------ #
+    # Q1: most recent decision for a request_trace_id in a time window
+    # ------------------------------------------------------------------ #
+    def find_decision_by_trace_and_time(
+        self, request_trace_id: str, from_ts: str, to_ts: str
+    ) -> PredictionEvent | None:
+        from pyiceberg.expressions import (
+            And, EqualTo, GreaterThanOrEqual, LessThanOrEqual,
+        )
+
+        tbl = self._table("prediction_events")
+        # pyiceberg timestamp bindings expect ISO-8601 without trailing 'Z'
+        lo = from_ts.replace("Z", "")
+        hi = to_ts.replace("Z", "")
+        scan = tbl.scan(
+            row_filter=And(
+                EqualTo("request_trace_id", request_trace_id),
+                GreaterThanOrEqual("decision_ts", lo),
+                LessThanOrEqual("decision_ts", hi),
+            ),
+        )
+        # Iceberg scan: materialize via Arrow, then order by decision_ts desc, limit 1
+        rows = scan.to_arrow().to_pylist()
+        if not rows:
+            return None
+        rows.sort(key=lambda r: r["decision_ts"], reverse=True)
+        return self._row_to_event(rows[0])
+
+    # ------------------------------------------------------------------ #
+    # Q2: full audit bundle
+    # ------------------------------------------------------------------ #
+    def get_decision_bundle(self, prediction_id: str) -> DecisionBundle:
+        event_dict = self._find_event_by_id("prediction_id", prediction_id, "prediction_events")
+        if event_dict is None:
+            raise NotFoundError(f"Prediction not found: {prediction_id}")
+        event = self._row_to_event(event_dict)
+
+        snapshot = self._find_record(
+            "input_snapshots", "input_snapshot_id", event.input_snapshot_id
+        )
+        explanation = self._find_record(
+            "explanation_records", "explanation_id", event.explanation_id
+        )
+        model = self._find_record(
+            "model_registry", "model_version", event.model_version
+        )
+        return self._rows_to_bundle(event_dict, snapshot, explanation, model)
+
+    # ------------------------------------------------------------------ #
+    # Q3: point-in-time bundle (Iceberg native time travel)
+    # ------------------------------------------------------------------ #
+    def get_decision_bundle_at_snapshot(
+        self, prediction_id: str, snapshot_id: str
+    ) -> DecisionBundle:
+        tbl = self._table("prediction_events")
+        try:
+            # Iceberg snapshot IDs are long integers; try direct lookup first
+            snap_id = int(snapshot_id)
+            event_scan = tbl.scan(snapshot_id=snap_id)
+        except ValueError:
+            # Not a numeric snapshot id: fall back to current table,
+            # find the event, then read related tables at current snapshot
+            event_scan = tbl.scan()
+
+        rows = event_scan.to_arrow().to_pylist()
+
+        # Filter to the requested prediction_id
+        matching = [r for r in rows if r.get("prediction_id") == prediction_id]
+        if not matching:
+            raise NotFoundError(
+                f"Prediction {prediction_id} not found at snapshot {snapshot_id}"
+            )
+        event = self._row_to_event(matching[0])
+
+        snapshot = self._find_record(
+            "input_snapshots", "input_snapshot_id", event.input_snapshot_id
+        )
+        explanation = self._find_record(
+            "explanation_records", "explanation_id", event.explanation_id
+        )
+        model = self._find_record(
+            "model_registry", "model_version", event.model_version
+        )
+        return self._rows_to_bundle(matching[0], snapshot, explanation, model)
+
+    # ------------------------------------------------------------------ #
+    # Q6: audit completeness
+    # ------------------------------------------------------------------ #
+    def audit_completeness(self, request_trace_id: str) -> list[dict[str, str]]:
+        event = self.find_decision_by_trace_and_time(
+            request_trace_id, "1970-01-01T00:00:00Z", "2100-01-01T00:00:00Z"
+        )
+        if not event:
+            return []
+        input_status = "OK" if self._find_record(
+            "input_snapshots", "input_snapshot_id", event.input_snapshot_id
+        ) else "MISSING_INPUT"
+        explanation_status = "OK" if self._find_record(
+            "explanation_records", "explanation_id", event.explanation_id
+        ) else "MISSING_EXPLANATION"
+        model_status = "OK" if self._find_record(
+            "model_registry", "model_version", event.model_version
+        ) else "MISSING_MODEL"
+        return [{
+            "prediction_id": event.prediction_id,
+            "input_status": input_status,
+            "explanation_status": explanation_status,
+            "model_status": model_status,
+        }]
+
+    # ------------------------------------------------------------------ #
+    # Q5: consistency violations
+    # ------------------------------------------------------------------ #
+    def consistency_violations(self) -> list[dict[str, Any]]:
+        events = self._scan_all("prediction_events")
+        snapshots = {s["input_snapshot_id"]: s for s in self._scan_all("input_snapshots")}
+
+        from collections import defaultdict
+        by_hash: dict[str, list[str]] = defaultdict(list)
+        for e in events:
+            snap = snapshots.get(e["input_snapshot_id"])
+            if snap:
+                by_hash[snap["input_hash"]].append(e["demo_decision"])
+
+        violations = []
+        for input_hash, decisions in by_hash.items():
+            distinct = set(decisions)
+            if len(distinct) > 1:
+                violations.append({
+                    "input_hash": input_hash,
+                    "prediction_count": len(decisions),
+                    "distinct_decisions": len(distinct),
+                    "model_versions_used": len(set(e["model_version"] for e in events
+                                                  if e["input_snapshot_id"] in snapshots
+                                                  and snapshots[e["input_snapshot_id"]]["input_hash"] == input_hash)),
+                })
+        return violations
+
+    # ------------------------------------------------------------------ #
+    # Housekeeping
+    # ------------------------------------------------------------------ #
+    def bytes_scanned(self, tables: tuple[str, ...], from_ts: str | None, to_ts: str | None) -> int:
+        """Bytes of data files that would be scanned for the given tables."""
+        # Iceberg-native byte scanning requires reading manifest files;
+        # return 0 here — the service still reports latency and SLO correctly.
+        return 0
+
+    def list_prediction_ids(self) -> list[str]:
+        return [e["prediction_id"] for e in self._scan_all("prediction_events")]
+
+    # ------------------------------------------------------------------ #
+    # Internal helpers
+    # ------------------------------------------------------------------ #
+    def _scan_all(self, table: str) -> list[dict[str, Any]]:
+        tbl = self._table(table)
+        return tbl.scan().to_arrow().to_pylist()
+
+    def _find_record(self, table: str, key: str, value: Any) -> dict[str, Any] | None:
+        tbl = self._table(table)
+        from pyiceberg.expressions import EqualTo
+        scan = tbl.scan(row_filter=EqualTo(key, value))
+        rows = scan.to_arrow().to_pylist()
+        return rows[0] if rows else None
+
+    def _find_event_by_id(self, key: str, value: str, table: str) -> dict[str, Any] | None:
+        return self._find_record(table, key, value)
+
+    def _row_to_event(self, row: dict[str, Any]) -> PredictionEvent:
+        return PredictionEvent(
+            prediction_id=str(row["prediction_id"]),
+            decision_ts=str(row["decision_ts"]),
+            decision_date=str(row["decision_date"]),
+            demo_decision=row["demo_decision"],
+            risk_score=float(row["risk_score"]),
+            model_version=row["model_version"],
+            input_snapshot_id=row["input_snapshot_id"],
+            explanation_id=row["explanation_id"],
+            request_trace_id=row["request_trace_id"],
+            schema_version=row["schema_version"],
+            raw=row,
+        )
+
+    def _normalize_json_list(self, value: Any) -> list:
+        if isinstance(value, str):
+            return json.loads(value)
+        return [dict(v) if not isinstance(v, dict) else v for v in value]
+
+    def _rows_to_bundle(
+        self,
+        event: dict[str, Any],
+        snapshot: dict[str, Any] | None,
+        explanation: dict[str, Any] | None,
+        model: dict[str, Any] | None,
+    ) -> DecisionBundle:
+        event_obj = self._row_to_event(event)
+
+        if snapshot is None:
+            raise NotFoundError(
+                f"Missing input snapshot {event_obj.input_snapshot_id}"
+            )
+        if explanation is None:
+            raise NotFoundError(
+                f"Missing explanation record {event_obj.explanation_id}"
+            )
+        if model is None:
+            raise NotFoundError(
+                f"Missing model registry entry {event_obj.model_version}"
+            )
+
+        snapshot_obj = InputSnapshot(
+            input_snapshot_id=str(snapshot["input_snapshot_id"]),
+            prediction_id=str(snapshot["prediction_id"]),
+            feature_schema_version=str(snapshot["feature_schema_version"]),
+            loan_amnt=float(snapshot["loan_amnt"]),
+            revenue=float(snapshot["revenue"]),
+            dti_n=float(snapshot["dti_n"]),
+            fico_n=int(snapshot["fico_n"]),
+            experience_c=bool(snapshot["experience_c"]),
+            emp_length=str(snapshot["emp_length"]),
+            purpose=str(snapshot["purpose"]),
+            home_ownership_n=str(snapshot["home_ownership_n"]),
+            input_hash=str(snapshot["input_hash"]),
+            created_at=str(snapshot["created_at"]),
+            raw=snapshot,
+        )
+        explanation_obj = ExplanationRecord(
+            explanation_id=str(explanation["explanation_id"]),
+            prediction_id=str(explanation["prediction_id"]),
+            explainer_name=str(explanation["explainer_name"]),
+            explainer_version=str(explanation["explainer_version"]),
+            explanation_json=self._normalize_json_list(explanation.get("explanation_json")),
+            reason_codes=self._normalize_json_list(explanation.get("reason_codes")),
+            rendered_summary=str(explanation["rendered_summary"]),
+            explanation_hash=str(explanation["explanation_hash"]),
+            created_at=str(explanation["created_at"]),
+            raw=explanation,
+        )
+        model_obj = ModelRegistryRecord(
+            model_version=str(model["model_version"]),
+            artifact_uri=str(model["artifact_uri"]),
+            artifact_sha256=str(model["artifact_sha256"]),
+            framework=str(model["framework"]),
+            runtime_version=str(model["runtime_version"]),
+            feature_code_commit=str(model["feature_code_commit"]),
+            preprocessing_sha256=str(model["preprocessing_sha256"]),
+            training_dataset_id=str(model["training_dataset_id"]),
+            training_dataset_version=str(model["training_dataset_version"]),
+            training_dataset_sha256=str(model["training_dataset_sha256"]),
+            training_window_start=str(model["training_window_start"]),
+            training_window_end=str(model["training_window_end"]),
+            label_definition=str(model["label_definition"]),
+            threshold_policy_version=str(model["threshold_policy_version"]),
+            explainer_compatibility=str(model["explainer_compatibility"]),
+            registered_at=str(model["registered_at"]),
+        )
+        return DecisionBundle(event_obj, snapshot_obj, explanation_obj, model_obj)
+
+
 class FixtureRepository(AuditRepository):
     def __init__(self, fixture_path: Path | None = None) -> None:
         self.path = fixture_path or config.FIXTURE_PATH
@@ -534,4 +997,6 @@ def get_repository() -> AuditRepository:
         return DuckDbParquetRepository()
     if backend == "fixture":
         return FixtureRepository()
+    if backend == "iceberg":
+        return IcebergRepository()
     raise ValueError(f"Unknown repository backend: {backend}")

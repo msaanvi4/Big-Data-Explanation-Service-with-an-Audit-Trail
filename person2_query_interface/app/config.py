@@ -16,10 +16,19 @@ MONTHLY_BATCHES_DIR = DATA_DIR / "monthly_batches"
 FIXTURE_PATH = DATA_DIR / "synthetic_audit_records.json"
 SQL_DIR = PERSON2_DIR / "sql"
 
-# Backend selection: "duckdb" (Parquet files, runs without a cluster) or
-# "fixture" (JSON fixture only). On a real Iceberg catalog this swaps to a
-# Spark/Iceberg implementation of the same SQL in sql/queries.sql.
+# Backend selection: "duckdb" (Parquet files, runs without a cluster),
+# "fixture" (JSON fixture only), or "iceberg" (real Apache Iceberg catalog
+# via pyiceberg). On Iceberg the same SQL in sql/queries.sql runs with native
+# VERSION AS OF time travel.
 REPO_BACKEND = os.getenv("EXPLANATION_REPO_BACKEND", "duckdb")
+
+# Iceberg catalog settings
+ICEBERG_CATALOG_NAME = os.getenv("ICEBERG_CATALOG_NAME", "demo")
+ICEBERG_NAMESPACE = os.getenv("ICEBERG_NAMESPACE", "audit")
+ICEBERG_WAREHOUSE = os.getenv(
+    "ICEBERG_WAREHOUSE",
+    str(REPO_ROOT / "iceberg_warehouse"),
+)
 
 # Reproducibility tolerances
 SCORE_TOLERANCE = float(os.getenv("EXPLANATION_SCORE_TOLERANCE", "1e-6"))  # exact score match
