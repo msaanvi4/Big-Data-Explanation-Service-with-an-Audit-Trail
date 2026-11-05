@@ -1,0 +1,59 @@
+# Docker Compose for the Explanation Service with an Audit Trail
+#
+# Usage:
+#   docker compose up --build          # start the API (DuckDB/Parquet backend)
+#   docker compose up --build iceberg  # start the API backed by a real Iceberg catalog
+#
+# Endpoints (host port 8000):
+#   GET /health
+#   GET /explain?request_trace_id=...&from_ts=...&to_ts=...
+#   GET /decision/{prediction_id}
+#   GET /decision/{prediction_id}/at/{snapshot_id}
+#   GET /replay/{prediction_id}
+#   GET /consistency
+
+services:
+  explanation-service:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - EXPLANATION_REPO_BACKEND=duckdb
+    volumes:
+      - ./person2_query_interface/data/monthly_batches:/app/person2_query_interface/data/monthly_batches:ro
+      - ./iceberg_warehouse:/app/iceberg_warehouse:rw
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  explanation-service-iceberg:
+    build: .
+    ports:
+      - "8001:8000"
+    environment:
+      - EXPLANATION_REPO_BACKEND=iceberg
+      - ICEBERG_WAREHOUSE=/app/iceberg_warehouse
+      - ICEBERG_CATALOG_NAME=demo
+      - ICEBERG_NAMESPACE=audit
+    volumes:
+      - ./iceberg_warehouse:/app/iceberg_warehouse:rw
+    depends_on:
+      explanation-service:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-off: initialize Iceberg tables and load the synthetic Parquet batches.
+  iceberg-init:
+    build: .
+    environment:
+      - EXPLANATION_REPO_BACKEND=iceberg
+      - ICEBERG_WAREHOUSE=/app/iceberg_warehouse
+      - ICEBERG_CATALOG_NAME=demo
+      - ICEBERG_NAMESPACE=audit
+    volumes:
+      - ./iceberg_warehouse:/app/iceberg_warehouse:rw
+      - ./person2_query_interface/data/monthly_batches:/app/person2_query_interface/data/monthly_batches:ro
+    command: python init_iceberg.py
